@@ -476,6 +476,12 @@ class EOVWGSConverterDialog(QtWidgets.QDialog):
         import_excel_button.clicked.connect(self.import_from_excel)
         left_layout.addWidget(import_excel_button)
         
+        # Excel export (EOV) gomb
+        export_excel_eov_button = QtWidgets.QPushButton("Excel export (EOV)")
+        export_excel_eov_button.setMaximumWidth(140)
+        export_excel_eov_button.clicked.connect(self.export_markers_to_excel_eov)
+        left_layout.addWidget(export_excel_eov_button)
+
         
         # Rugalmas tér a status bar előtt
         left_layout.addStretch()
@@ -867,6 +873,61 @@ class EOVWGSConverterDialog(QtWidgets.QDialog):
                 
         except Exception as e:
             logger.error(f"Hiba KML exportálásban: {e}")
+            self.show_error(f"Hiba történt: {str(e)}")
+
+    def export_markers_to_excel_eov(self):
+        """Összes jelölő exportálása Excelbe (Név, EOVY, EOVX)"""
+        try:
+            if not self.map_manager.markers:
+                self.show_error("Nincsenek pontok az exportáláshoz")
+                return
+
+            # Mentési hely kiválasztása
+            filename, _ = QFileDialog.getSaveFileName(
+                self,
+                "Excel fájl mentése",
+                "pontok_eov.xlsx",
+                "Excel files (*.xlsx)"
+            )
+
+            if not filename:
+                return
+
+            rows = []
+            for i, marker in enumerate(self.map_manager.markers):
+                lat, lon = marker.get('location', (None, None))
+                if lat is None or lon is None:
+                    continue
+                # WGS -> EOV konverzió
+                eov_y, eov_x = self.coordinate_converter.wgs_to_eov(lat, lon)
+                name = marker.get('point_name') or f"Pont {i+1}"
+                rows.append({
+                    'Név': name,
+                    'EOVY': round(eov_y, 2),
+                    'EOVX': round(eov_x, 2),
+                })
+
+            if not rows:
+                self.show_error("Nincs exportálható pont")
+                return
+
+            # DataFrame és mentés
+            df = pd.DataFrame(rows, columns=['Név', 'EOVY', 'EOVX'])
+            try:
+                df.to_excel(filename, index=False)
+            except Exception as ex:
+                # Próbáljuk meg explicit engine-gel is
+                try:
+                    df.to_excel(filename, index=False, engine='openpyxl')
+                except Exception:
+                    raise ex
+
+            self.show_info(f"Excel fájl sikeresen mentve: {filename}")
+            self.status_bar.showMessage(f"Excel export (EOV): {len(rows)} pont")
+            logger.info(f"Excel (EOV) mentve: {filename}, {len(rows)} pont")
+
+        except Exception as e:
+            logger.error(f"Hiba Excel export (EOV) során: {e}")
             self.show_error(f"Hiba történt: {str(e)}")
     
     def generate_kml_content(self) -> str:
