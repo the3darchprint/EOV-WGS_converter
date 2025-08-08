@@ -28,6 +28,7 @@ from PyQt5 import QtWebEngineWidgets
 
 from pyproj import Transformer
 import folium
+import pandas as pd
 
 # Logging konfiguráció
 logging.basicConfig(
@@ -204,7 +205,6 @@ class MapManager:
             location=location
         )
         
-        map_obj.add_child(folium.ClickForMarker())
         logger.info(f"Térkép létrehozva: {location}, zoom: {zoom}")
         return map_obj
     
@@ -225,7 +225,8 @@ class MapManager:
     def add_marker_with_name(self, map_obj: folium.Map, location: Tuple[float, float], 
                             popup: str, tooltip: str, point_name: str) -> None:
         """
-        Markert ad a térképhez pontnévvel
+        Markert eltárol a listában pontnévvel; a térképre nem teszi fel azonnal.
+        A megjelenítést az add_all_markers_to_map végzi.
         
         Args:
             map_obj: Térkép objektum
@@ -242,6 +243,7 @@ class MapManager:
             'point_name': point_name
         }
         self.markers.append(marker_data)
+        logger.info(f"Marker eltárolva: {location}, pontnév: {point_name}")
         
         if point_name:
             # Ha van pontnév, akkor egyedi ikont használunk és a nevet megjelenítjük
@@ -362,7 +364,7 @@ class EOVWGSConverterDialog(QtWidgets.QDialog):
         """UI létrehozása"""
         self.setObjectName("EOVWGSConverterDialog")
         self.setWhatsThis("EOV-WGS Koordináta Konverter")
-        self.resize(800, 800)
+        self.resize(1200, 800)
         
         # Fő layout
         main_layout = QHBoxLayout(self)
@@ -391,17 +393,17 @@ class EOVWGSConverterDialog(QtWidgets.QDialog):
         
 
         
-        # Pontok törlése gomb
-        clear_markers_button = QtWidgets.QPushButton("Összes pont törlése")
-        clear_markers_button.setMaximumWidth(120)
-        clear_markers_button.clicked.connect(self.clear_all_markers)
-        left_layout.addWidget(clear_markers_button)
-        
         # KML export gomb
         export_kml_button = QtWidgets.QPushButton("KML export")
         export_kml_button.setMaximumWidth(120)
         export_kml_button.clicked.connect(self.export_to_kml)
         left_layout.addWidget(export_kml_button)
+        
+        # Excel import gomb
+        import_excel_button = QtWidgets.QPushButton("Excel import")
+        import_excel_button.setMaximumWidth(120)
+        import_excel_button.clicked.connect(self.import_from_excel)
+        left_layout.addWidget(import_excel_button)
         
         # Rugalmas tér a status bar előtt
         left_layout.addStretch()
@@ -829,6 +831,157 @@ class EOVWGSConverterDialog(QtWidgets.QDialog):
             placemarks.append(placemark)
         
         return kml_header + "\n".join(placemarks) + kml_footer
+    
+    def delete_selected_point(self):
+        """Kijelölt pont törlése a térképről"""
+        try:
+            if not self.map_manager.markers:
+                self.show_error("Nincsenek pontok a törléshez")
+                return
+            
+            # Pont kiválasztás dialógus
+            point_names = []
+            for i, marker_data in enumerate(self.map_manager.markers):
+                point_name = marker_data['point_name']
+                location = marker_data['location']
+                if point_name:
+                    point_names.append(f"{i+1}. {point_name} ({location[0]:.5f}, {location[1]:.5f})")
+                else:
+                    point_names.append(f"{i+1}. Pont {i+1} ({location[0]:.5f}, {location[1]:.5f})")
+            
+            # Pont kiválasztás dialógus
+            point_name, ok = QtWidgets.QInputDialog.getItem(
+                self, 
+                "Pont kiválasztása", 
+                "Válaszd ki a törlendő pontot:", 
+                point_names, 
+                0, 
+                False
+            )
+            
+            if ok and point_name:
+                # Pont indexének megtalálása
+                selected_index = int(point_name.split('.')[0]) - 1
+                
+                if 0 <= selected_index < len(self.map_manager.markers):
+                    # Pont törlése
+                    deleted_point = self.map_manager.markers.pop(selected_index)
+                    deleted_name = deleted_point['point_name'] or f"Pont {selected_index+1}"
+                    
+                    # Térkép frissítése
+                    if self.map_manager.markers:
+                        # Ha van még pont, akkor az elsőre ugrik
+                        first_location = self.map_manager.markers[0]['location']
+                        map_obj = self.map_manager.create_map(first_location)
+                        self.map_manager.add_all_markers_to_map(map_obj)
+                    else:
+                        # Ha nincs több pont, akkor alapértelmezett helyre
+                        map_obj = self.map_manager.create_map(MapConfig.DEFAULT_LOCATION)
+                    
+                    html_content = self.map_manager.save_map_to_html(map_obj)
+                    self.map_updated.emit(html_content)
+                    self.conversion_completed.emit("Térkép frissítve - pont törölve")
+                    
+                    self.show_info(f"Pont törölve: {deleted_name}")
+                    self.status_bar.showMessage(f"Pont törölve: {deleted_name}")
+                    logger.info(f"Pont törölve: {deleted_name}")
+                else:
+                    self.show_error("Érvénytelen pont index")
+            else:
+                self.status_bar.showMessage("Pont törlése megszakítva")
+                
+        except Exception as e:
+            logger.error(f"Hiba pont törlésében: {e}")
+            self.show_error(f"Hiba történt: {str(e)}")
+    
+    def import_from_excel(self):
+        """Excel fájl importálása és pontok hozzáadása"""
+        try:
+            # Fájl kiválasztás dialógus
+            filename, _ = QFileDialog.getOpenFileName(
+                self, 
+                "Excel fájl kiválasztása", 
+                "", 
+                "Excel files (*.xlsx *.xls)"
+            )
+            
+            if not filename:
+                return
+            
+            # Excel fájl beolvasása
+            try:
+                df = pd.read_excel(filename, header=0)  # Első sor fejléc
+                logger.info(f"Excel fájl betöltve: {filename}")
+            except Exception as e:
+                self.show_error(f"Hiba az Excel fájl beolvasásában: {str(e)}")
+                logger.error(f"Excel beolvasási hiba: {e}")
+                return
+            
+            # Adatok ellenőrzése
+            if len(df.columns) < 4:
+                self.show_error("Az Excel fájlban legalább 4 oszlopnak kell lennie: Név, Leírás, Y koordináta, X koordináta")
+                return
+            
+            # Pontok feldolgozása
+            imported_points = 0
+            for index, row in df.iterrows():
+                try:
+                    # Adatok kinyerése
+                    point_name = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+                    description = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+                    y_coord = row.iloc[2]
+                    x_coord = row.iloc[3]
+                    
+                    # Koordináták ellenőrzése
+                    if pd.isna(y_coord) or pd.isna(x_coord):
+                        logger.warning(f"Hiányzó koordináták a {index+2}. sorban")
+                        continue
+                    
+                    # EOV koordináták konvertálása WGS84-re
+                    coords = self.coordinate_converter.eov_to_wgs(float(y_coord), float(x_coord))
+                    
+                    # Marker adatok létrehozása
+                    eovyfinal = f'{coords[0]:.{CoordinateConfig.COORDINATE_PRECISION}f}'
+                    eovxfinal = f'{coords[1]:.{CoordinateConfig.COORDINATE_PRECISION}f}'
+                    
+                    if point_name:
+                        tooltip = f"{point_name}<br>{eovyfinal}, {eovxfinal}"
+                        popup = f"<b>{point_name}</b><br>{description}<br>EOVY: {y_coord}<br>EOVX: {x_coord}"
+                    else:
+                        tooltip = f"{eovyfinal}, {eovxfinal}"
+                        popup = f"<b>{description}</b><br>EOVY: {y_coord}<br>EOVX: {x_coord}"
+                    
+                    # Marker hozzáadása a listához
+                    marker_data = {
+                        'location': coords,
+                        'popup': popup,
+                        'tooltip': tooltip,
+                        'point_name': point_name
+                    }
+                    self.map_manager.markers.append(marker_data)
+                    imported_points += 1
+                    
+                except Exception as e:
+                    logger.error(f"Hiba a {index+2}. sor feldolgozásában: {e}")
+                    continue
+            
+            if imported_points > 0:
+                # Térkép frissítése az első importált pontra középre állítva
+                first_location = self.map_manager.markers[-imported_points]['location']  # Az első importált pont
+                map_obj = self.map_manager.create_map(first_location)
+                self.map_manager.add_all_markers_to_map(map_obj)
+                html_content = self.map_manager.save_map_to_html(map_obj)
+                self.map_updated.emit(html_content)
+                
+                self.show_info(f"Excel import sikeres: {imported_points} pont importálva")
+                self.status_bar.showMessage(f"Excel import: {imported_points} pont")
+                logger.info(f"Excel import sikeres: {imported_points} pont")
+            else:
+                self.show_error("Nem sikerült importálni egyetlen pontot sem")
+                
+        except Exception as e:
+            logger.error(f"Hiba Excel importálásban: {e}")
+            self.show_error(f"Hiba történt: {str(e)}")
 
 
 def main():
