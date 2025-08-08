@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+    <name>EOV-WGS Konverter Pontok</name>
+    <description>Exportált pontok az EOV-WGS Konverter alkalmazásból</description>
+    <Placemark>
+        <name>50000</name>
+        <description><b>50000</b><br>EOVY: 650000.0<br>EOVX: 240000.0</description>
+        <Point>
+            <coordinates>19.047444674871915,47.50393210556001,0</coordinates>
+        </Point>
+    </Placemark>
+    <Placemark>
+        <name>5050</name>
+        <description><b>5050</b><br>EOVY: 650100.0<br>EOVX: 240100.0</description>
+        <Point>
+            <coordinates>19.04877209138479,47.50483158899588,0</coordinates>
+        </Point>
+    </Placemark>
+</Document>
+</kml>
