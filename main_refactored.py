@@ -25,10 +25,14 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QDesktopServices, QFont, QPixmap
 from PyQt5.QtCore import QUrl, pyqtSignal, QThread, QTimer
 from PyQt5 import QtWebEngineWidgets
+from PyQt5.QtWebChannel import QWebChannel
 
 from pyproj import Transformer
 import folium
 import pandas as pd
+from PyQt5 import QtWebEngineWidgets
+from folium import MacroElement
+from jinja2 import Template
 
 # Logging konfiguráció
 logging.basicConfig(
@@ -174,7 +178,70 @@ class CoordinateConverter:
             logger.error(f"Hiba WGS84->EOV konverzióban: {e}")
             raise
 
+class ClickAddMarker(MacroElement):
+    def __init__(self):
+        super().__init__()
+        self._template = Template("""
+            {% macro header(this, kwargs) %}
+            <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+            <script>
+              var bridge = null;
+              if (typeof qt !== 'undefined') {
+                new QWebChannel(qt.webChannelTransport, function(channel) {
+                  bridge = channel.objects.bridge;
+                });
+              }
+            </script>
+            {% endmacro %}
+            {% macro script(this, kwargs) %}
+            var map = {{ this._parent.get_name() }};
+            function onMapClick(e) {
+              if (bridge && bridge.mapClicked) {
+                bridge.mapClicked(e.latlng.lat, e.latlng.lng);
+              }
+            }
+            map.on('click', onMapClick);
+            {% endmacro %}
+        """)
+class MapBridge(QtCore.QObject):
+    def __init__(self, dialog):
+        super().__init__()
+        self.dialog = dialog
 
+    @QtCore.pyqtSlot(float, float)
+    def mapClicked(self, lat, lng):
+        try:
+            point_name, ok = QtWidgets.QInputDialog.getText(
+                self.dialog,
+                "Pont hozzáadása",
+                f"Kattintott hely:\n{lat:.6f}, {lng:.6f}\n\nAdd meg a pont nevét:"
+            )
+            if not ok or point_name is None:
+                return
+
+            eov_y, eov_x = self.dialog.coordinate_converter.wgs_to_eov(lat, lng)
+
+            tooltip = f"{point_name}<br>{lat:.5f}, {lng:.5f}"
+            popup = f"<b>{point_name}</b><br>WGS84: {lat:.5f}, {lng:.5f}<br>EOVY: {eov_y:.2f}<br>EOVX: {eov_x:.2f}"
+
+            marker_data = {
+                'location': (lat, lng),
+                'popup': popup,
+                'tooltip': tooltip,
+                'point_name': point_name
+            }
+            self.dialog.map_manager.markers.append(marker_data)
+
+            map_obj = self.dialog.map_manager.create_map((lat, lng))
+            self.dialog.map_manager.add_all_markers_to_map(map_obj)
+            html_content = self.dialog.map_manager.save_map_to_html(map_obj)
+            self.dialog.map_updated.emit(html_content)
+
+            self.dialog.status_bar.showMessage(f"Pont hozzáadva: {point_name}")
+            logger.info(f"Pont hozzáadva kattintással: {point_name} @ ({lat}, {lng})")
+        except Exception as e:
+            logger.error(f"Hiba mapClicked feldolgozásakor: {e}")
+            self.dialog.show_error(f"Hiba történt: {str(e)}")
 class MapManager:
     """Térkép kezelő osztály"""
     
@@ -204,6 +271,9 @@ class MapManager:
             zoom_start=zoom,
             location=location
         )
+        
+        # Kattintásra marker felvétele (Leaflet map.on('click'))
+        map_obj.add_child(ClickAddMarker())
         
         logger.info(f"Térkép létrehozva: {location}, zoom: {zoom}")
         return map_obj
@@ -355,6 +425,7 @@ class EOVWGSConverterDialog(QtWidgets.QDialog):
         
         # UI létrehozása
         self.setup_ui()
+        self.setup_webchannel()
         self.setup_connections()
         self.create_initial_map()
         
@@ -404,6 +475,7 @@ class EOVWGSConverterDialog(QtWidgets.QDialog):
         import_excel_button.setMaximumWidth(120)
         import_excel_button.clicked.connect(self.import_from_excel)
         left_layout.addWidget(import_excel_button)
+        
         
         # Rugalmas tér a status bar előtt
         left_layout.addStretch()
@@ -545,7 +617,12 @@ class EOVWGSConverterDialog(QtWidgets.QDialog):
         # Signal kapcsolatok
         self.map_updated.connect(self.update_map_display)
         self.conversion_completed.connect(self.show_status_message)
-    
+    def setup_webchannel(self):
+        """QWebChannel inicializálása a térképhez"""
+        self.channel = QWebChannel(self.map_widget.page())
+        self.bridge = MapBridge(self)
+        self.channel.registerObject('bridge', self.bridge)
+        self.map_widget.page().setWebChannel(self.channel)        
     def retranslate_ui(self):
         """UI szövegek beállítása"""
         self.setWindowTitle("EOV-WGS Konverter")
@@ -983,7 +1060,7 @@ class EOVWGSConverterDialog(QtWidgets.QDialog):
             logger.error(f"Hiba Excel importálásban: {e}")
             self.show_error(f"Hiba történt: {str(e)}")
 
-
+    
 def main():
     """Fő alkalmazás indítása"""
     try:
