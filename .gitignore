@@ -2,4 +2,6 @@ env/
 *.pyc
 build/
 dist/
+temp/
+/temp
 *.spec
